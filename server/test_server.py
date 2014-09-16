@@ -751,14 +751,15 @@ class TestUsersPost(unittest.TestCase):
         Post request for new user
         """
         new_username = 'abcd@mail.com'
-        new_username_password = '123.Abc'
-        assert new_username not in server.userdata
+        new_user_password = '123.Abc'
 
-        test = self.app.post(urlparse.urljoin(SERVER_API, 'users/' + self.username),
-                             data={'password': self.password})
+        assert not username_exists(new_username)
 
-        # Test that user is added to userdata and is created
-        self.assertIn(self.username, server.userdata.keys())
+        test = self.app.post(urlparse.urljoin(SERVER_API, 'users/' + new_username),
+                             data={'password': new_user_password})
+
+        # Test that user is added to the users database
+        self.assertTrue(username_exists(new_username))
         self.assertEqual(test.status_code, HTTP_CREATED)
 
     def test_user_creation_with_invalid_email(self):
