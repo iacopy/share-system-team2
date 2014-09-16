@@ -50,9 +50,6 @@ REGISTERED_TEST_USER = 'user@mail.com', 'Mail_85'
 USR, PW = REGISTERED_TEST_USER
 
 
-# print server.database_proxy.get_tables()
-
-
 def pick_rand_str(length, possible_chars=string.ascii_lowercase):
     return ''.join([random.choice(possible_chars) for _ in xrange(length)])
 
