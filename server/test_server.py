@@ -237,7 +237,7 @@ class TestRequests(unittest.TestCase):
                  'sdfdffdgdgfs\n',
                  'sfsdgdhgdsdfgdg\n',
                  'dsffdgdfgdfgdf\n'
-                ]
+                 ]
         for term in terms:
             terms_file.write(term)
         # We have to give filename to the function update_passwordmeter_terms

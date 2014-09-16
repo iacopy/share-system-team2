@@ -650,7 +650,7 @@ class Users(Resource):
             if app.debug and activation_code == 'BACKDOOR':
                 password = 'debug-password'
                 logger.warn('WARNING: Creating user "{}" (password="{}") '
-                             'without email confirmation via backdoor!!!'.format(username, password))
+                            'without email confirmation via backdoor!!!'.format(username, password))
                 return create_user(username, password, activation_code)
             #### DEBUG-MODE BACKDOOR ####
 
