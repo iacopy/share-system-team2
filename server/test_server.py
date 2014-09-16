@@ -937,21 +937,22 @@ class TestUsersDelete(unittest.TestCase):
         _manually_create_user(USR, PW)
         user_dirpath = userpath2serverpath(USR)
         # Really created?
-        assert USR in server.userdata, 'Utente "{}" non risulta tra i dati'.format(USR)  # TODO: translate
-        assert os.path.exists(user_dirpath), 'Directory utente "{}" non trovata'.format(USR)  # TODO: translate
+        assert username_exists(USR), 'User \'{}\' does not exist!'.format(USR)
+        assert os.path.exists(user_dirpath), '{}\'s directory not found!'.format(USR)
 
         # Test FORBIDDEN case (removing other users)
         url = SERVER_API + 'users/' + 'otheruser'
         test = self.app.delete(url,
                                headers=make_basicauth_headers(USR, PW))
         self.assertEqual(test.status_code, server.HTTP_FORBIDDEN)
+        self.assertTrue(username_exists(USR))  # still exist?
 
         # Test OK case
         url = SERVER_API + 'users/' + USR
         test = self.app.delete(url,
                                headers=make_basicauth_headers(USR, PW))
 
-        self.assertNotIn(USR, server.userdata)
+        self.assertFalse(username_exists(USR))
         self.assertEqual(test.status_code, server.HTTP_OK)
         self.assertFalse(os.path.exists(user_dirpath))
 
