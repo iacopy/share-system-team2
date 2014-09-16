@@ -18,6 +18,8 @@ import tempfile
 import random
 import string
 
+import peewee
+
 import server
 from server import userpath2serverpath
 
@@ -46,6 +48,9 @@ logging.basicConfig(level=logging.WARNING)
 # Test-user account details
 REGISTERED_TEST_USER = 'user@mail.com', 'Mail_85'
 USR, PW = REGISTERED_TEST_USER
+
+
+# print server.database_proxy.get_tables()
 
 
 def pick_rand_str(length, possible_chars=string.ascii_lowercase):
@@ -135,10 +140,16 @@ def _manually_create_user(username, pw):
     # Create user directory with default structure (use the server function)
     user_dir_state = server.init_user_directory(username)
     single_user_data = user_dir_state
-    single_user_data[server.USER_IS_ACTIVE] = True
-    single_user_data[server.PWD] = enc_pass
-    single_user_data[server.USER_CREATION_TIME] = server.now_timestamp()
-    server.userdata[username] = single_user_data
+    server.userdata[username] = user_dir_state
+
+    server.User.create(
+        username=username,
+        active=True,
+        activation_code='',
+        encrypted_password=enc_pass,
+        activation_code_timestamp=0,
+        creation_timestamp=server.now_timestamp(),
+    )
     return single_user_data
 
 
@@ -150,11 +161,22 @@ def _manually_remove_user(username):  # TODO: make this from server module?
     """
     if USR in server.userdata:
         server.userdata.pop(username)
+
+    server.User.delete().where(server.User.username == username)
+
     # Remove user directory if exists!
     user_dirpath = userpath2serverpath(USR)
     if os.path.exists(user_dirpath):
         shutil.rmtree(user_dirpath)
         logging.debug('"%s" user directory removed' % user_dirpath)
+
+
+def username_exists(username):
+    try:
+        server.User.get(server.User.username == username)
+    except peewee.DoesNotExist:
+        return False
+    return True
 
 
 def setup_test_dir():
@@ -756,7 +778,8 @@ class TestUsersPost(unittest.TestCase):
         """
         test = self.app.post(urlparse.urljoin(SERVER_API, 'users/' + self.username), data={'password': 'weak_password'})
 
-        self.assertNotIn(self.username, server.userdata.keys())
+        qr = server.User.select().where(server.User.username == self.username)
+        self.assertEqual(qr.count(), 0)
         self.assertEqual(test.status_code, HTTP_FORBIDDEN)
         self.assertIsInstance(json.loads(test.get_data()), dict)
 
@@ -778,8 +801,9 @@ class TestUsersPost(unittest.TestCase):
         with server.mail.record_messages() as outbox:
             self.app.post(urlparse.urljoin(SERVER_API, 'users/' + self.username),
                           data={'password': self.password})
+
         # Retrieve the generated activation code
-        activation_code = server.userdata[self.username][server.USER_CREATION_DATA]['activation_code']
+        activation_code = server.User.get(server.User.username == self.username).activation_code
 
         self.assertEqual(len(outbox), 1)
         body = outbox[0].body
@@ -807,7 +831,8 @@ class TestUsersPut(unittest.TestCase):
         self.username = USR
         self.password = PW
         self.user_dirpath = userpath2serverpath(self.username)
-        assert self.username not in server.userdata
+
+        assert not username_exists(self.username)
         assert not os.path.exists(self.user_dirpath)
 
         # The Users.post (signup request) is repeatable
@@ -815,7 +840,7 @@ class TestUsersPut(unittest.TestCase):
                              data={'password': self.password})
 
         # Retrieve the generated activation code
-        self.activation_code = server.userdata[self.username][server.USER_CREATION_DATA]['activation_code']
+        self.activation_code = server.User.get(server.User.username == self.username).activation_code
 
     def tearDown(self):
         tear_down_test_dir()
@@ -829,7 +854,7 @@ class TestUsersPut(unittest.TestCase):
                             data={'activation_code': self.activation_code})
 
         self.assertEqual(test.status_code, HTTP_NOT_FOUND)
-        self.assertNotIn(unexisting_user, server.userdata.keys())
+        self.assertFalse(username_exists(unexisting_user))
         self.assertFalse(os.path.exists(userpath2serverpath(unexisting_user)))
 
     def test_wrong_activation_code(self):
@@ -838,10 +863,13 @@ class TestUsersPut(unittest.TestCase):
         """
         test = self.app.put(urlparse.urljoin(SERVER_API, 'users/' + self.username),
                             data={'activation_code': 'fake activation code'})
-        single_user_data = server.userdata[self.username]
+
         self.assertEqual(test.status_code, HTTP_NOT_FOUND)
-        self.assertFalse(single_user_data[server.USER_IS_ACTIVE])
         self.assertFalse(os.path.exists(self.user_dirpath))
+
+        # database
+        user = server.User.get(server.User.username == self.username)
+        self.assertFalse(user.active)
 
     def test_ok(self):
         """
@@ -851,13 +879,12 @@ class TestUsersPut(unittest.TestCase):
         test = self.app.put(urlparse.urljoin(SERVER_API, 'users/' + self.username),
                             data={'activation_code': self.activation_code})
 
-        self.assertIn(self.username, server.userdata.keys())
+        self.assertTrue(username_exists(self.username))
         self.assertTrue(os.path.exists(self.user_dirpath))
 
-        single_user_data = server.userdata[self.username]
-        self.assertNotIn(server.USER_CREATION_DATA, single_user_data)
-        self.assertIn(server.USER_CREATION_TIME, single_user_data)
-        self.assertTrue(single_user_data[server.USER_IS_ACTIVE])
+        user = server.User.get(server.User.username == self.username)
+        self.assertTrue(user.active)
+        self.assertEqual(user.activation_code, '')  # activation code must be reset
         self.assertEqual(test.status_code, HTTP_OK)
 
     def test__clean_inactive_users(self):
@@ -868,14 +895,28 @@ class TestUsersPut(unittest.TestCase):
         VALUSER = 'validuser'
         EXP_CREATION_TIME = server.now_timestamp() - server.USER_ACTIVATION_TIMEOUT - 1
         VALID_CREATION_TIME = server.now_timestamp()
-        server.userdata[EXPUSER] = {server.USER_IS_ACTIVE: False,
-                                    server.USER_CREATION_DATA: {server.USER_CREATION_TIME: EXP_CREATION_TIME}
-                                                                }
-        server.userdata[VALUSER] = {server.USER_IS_ACTIVE: False,
-                                    server.USER_CREATION_DATA: {server.USER_CREATION_TIME: VALID_CREATION_TIME}
-                                                                }
+
+        server.User.create(
+            username=EXPUSER,
+            active=False,
+            creation_timestamp=EXP_CREATION_TIME,
+            encrypted_password='does-not-matter',
+            activation_code='never-mind',
+            activation_code_timestamp=EXP_CREATION_TIME,  # TODO: mumble... equal to creation_timestamp
+        )
+        server.User.create(
+            username=VALUSER,
+            active=False,
+            creation_timestamp=VALID_CREATION_TIME,
+            encrypted_password='does-not-matter',
+            activation_code='never-mind',
+            activation_code_timestamp=VALID_CREATION_TIME,
+        )
+
         server.Users._clean_inactive_users()
-        self.assertNotIn(EXPUSER, server.userdata)
+
+        self.assertFalse(username_exists(EXPUSER))
+        self.assertTrue(username_exists(VALUSER))
 
 
 class TestUsersDelete(unittest.TestCase):
@@ -951,49 +992,57 @@ class TestUsersRecoverPassword(unittest.TestCase):
         self.app = server.app.test_client()
         self.app.testing = True
 
-        self.active_user = 'Activateduser'
+        self.active_username = 'Activateduser'
         self.active_user_pw = '234.Cde'
-        _manually_create_user(self.active_user, self.active_user_pw)
+        _manually_create_user(self.active_username, self.active_user_pw)
 
         self.inactive_username = 'inactiveuser'
         self.inactive_username_password = '123.Abc'
         self.inactive_username_activationcode = 'randomactivationcode'
-        server.userdata[self.inactive_username] = {
-            server.USER_IS_ACTIVE: False,
-            server.PWD: self.inactive_username_password,
-            server.USER_CREATION_DATA: {'creation_timestamp': server.now_timestamp(),
-                                        'activation_code':  self.inactive_username_activationcode,
-                                       },
-            }
+
+        server.User.create(
+            username=self.inactive_username,
+            active=False,
+            encrypted_password=self.inactive_username_password,
+            creation_timestamp=server.now_timestamp(),
+            activation_code=self.inactive_username_activationcode,
+            activation_code_timestamp=server.now_timestamp(),
+        )
 
     def test_active_user(self):
         """
         Test recover password request for an already active user
         """
-        url = SERVER_API + 'users/{}/reset'.format(self.active_user)
+        url = SERVER_API + 'users/{}/reset'.format(self.active_username)
 
         test = self.app.post(url)
 
         self.assertEqual(test.status_code, HTTP_ACCEPTED)
-        self.assertIsNotNone(server.userdata[self.active_user].get('recoverpass_data'))
+        # Test that the recoverpass_code is not empty in the database table:
+        self.assertTrue(server.User.get(server.User.username == self.active_username).recoverpass_code)
 
     def test_inactive_user(self):
         """
         Test recover password request for inactive user
         """
         url = SERVER_API + 'users/{}/reset'.format(self.inactive_username)
-        previous_activation_data = server.userdata[self.inactive_username][server.USER_CREATION_DATA]
-        previous_inactive_activation = previous_activation_data['activation_code']
-        previous_inactive_timestamp = previous_activation_data['creation_timestamp']
+
+        # Single user query before post
+        inactive_user = server.User.get(server.User.username == self.inactive_username)
+        previous_inactive_recoverpass_code = inactive_user.recoverpass_code
+        previous_inactive_recoverpass_timestamp = inactive_user.recoverpass_code_timestamp
+        inactive_user.save()
 
         test = self.app.post(url)
 
-        activation_data = server.userdata[self.inactive_username][server.USER_CREATION_DATA]
+        # Now repeat the same single user query, AFTER post
+        inactive_user = server.User.get(server.User.username == self.inactive_username)
+
         self.assertEqual(test.status_code, HTTP_ACCEPTED)
-        self.assertNotEqual(previous_inactive_activation,
-                            activation_data['activation_code'])
-        self.assertLess(previous_inactive_timestamp,
-                        activation_data['creation_timestamp'])
+        self.assertNotEqual(previous_inactive_recoverpass_code,
+                            inactive_user.recoverpass_code)
+        self.assertLess(previous_inactive_recoverpass_timestamp,
+                        inactive_user.recoverpass_code_timestamp)
 
     def test_unknown_user(self):
         """
@@ -1008,22 +1057,27 @@ class TestUsersRecoverPassword(unittest.TestCase):
         """
         Test the password recovery with correct PUT parameters.
         """
-        old_password = server.userdata[self.active_user]['password']
+        active_user = server.User.get(server.User.username == self.active_username)
+        old_encrypted_password = active_user.encrypted_password
 
         # Now we create an arbitrary recoverpass_code,
         # normally created by POST in /users/<username>/reset
         recoverpass_code = 'arbitrarycode'
-        server.userdata[self.active_user]['recoverpass_data'] = {
-            'recoverpass_code': recoverpass_code,
-            'timestamp': server.now_timestamp(),
-        }
+
+        active_user.recoverpass_code = recoverpass_code
+        active_user.recoverpass_code_timestamp = server.now_timestamp()
+        active_user.save()
 
         # then, put with given code and new password
-        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_user),
+        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_username),
                             data={'recoverpass_code': recoverpass_code,
-                                  'password': self.active_user_pw})
+                                  'password': '1.new STRONG password!'})
+
+        # Now we have to remake the query
+        active_user = server.User.get(server.User.username == self.active_username)
+
         self.assertEqual(test.status_code, HTTP_OK)
-        self.assertNotEqual(old_password, server.userdata[self.active_user]['password'])
+        self.assertNotEqual(old_encrypted_password, active_user.encrypted_password)
 
     def test_put_recoverpass_code_timeout(self):
         """
@@ -1034,17 +1088,19 @@ class TestUsersRecoverPassword(unittest.TestCase):
         # and this must return a success.
         # NB: This is possible due to the fact that (TODO?) expired tokens are currently keep.
         recoverpass_creation_time = 100  # 1970, less than a second after the midnight of 31 dec 1969 :p
-        server.userdata[self.active_user]['recoverpass_data'] = {
-            'recoverpass_code': 'ok_code',
-            'timestamp': recoverpass_creation_time,
-        }
+
+        active_user = server.User.get(server.User.username == self.active_username)
+        active_user.recoverpass_code = 'ok_code'
+        active_user.recoverpass_code_timestamp = recoverpass_creation_time
+        active_user.save()
+
         recoverpass_expiration_time = recoverpass_creation_time + server.USER_RECOVERPASS_TIMEOUT
         just_in_time = recoverpass_expiration_time - 1
         too_late = recoverpass_expiration_time + 1
         test_responses = []
         for now in (too_late, just_in_time):  # backward
             server.now_timestamp = lambda: now  # Time machine Python powered :)
-            test_responses.append(self.app.put(SERVER_API + 'users/{}'.format(self.active_user),
+            test_responses.append(self.app.put(SERVER_API + 'users/{}'.format(self.active_username),
                                                data={'recoverpass_code': 'ok_code',
                                                      'password': '123.Abc'}))
         # The first must be expired, the second must be valid.
@@ -1055,16 +1111,15 @@ class TestUsersRecoverPassword(unittest.TestCase):
         Test recovery email recipient, subject and body.
         """
         with server.mail.record_messages() as outbox:
-            self.app.post(urlparse.urljoin(SERVER_API, 'users/{}/reset'.format(self.active_user)))
-        # Retrieve the generated activation code
-        recoverpass_data = server.userdata[self.active_user]['recoverpass_data']
-        recoverpass_code = recoverpass_data['recoverpass_code']
+            self.app.post(urlparse.urljoin(SERVER_API, 'users/{}/reset'.format(self.active_username)))
+        # Retrieve the generated recoverpass code
+        recoverpass_code = server.User.get(server.User.username == self.active_username).recoverpass_code
 
         self.assertEqual(len(outbox), 1)
         body = outbox[0].body
         recipients = outbox[0].recipients
         subject = outbox[0].subject
-        self.assertEqual(recipients, [self.active_user])
+        self.assertEqual(recipients, [self.active_username])
         # A line must be the recoverpass code
         self.assertIn(recoverpass_code, body.splitlines())
         # The email subject and body must contain some "keywords".
@@ -1075,7 +1130,7 @@ class TestUsersRecoverPassword(unittest.TestCase):
         """
         Test a PUT request made by an active user with a wrong password
         """
-        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_user))
+        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_username))
         self.assertEqual(test.status_code, HTTP_BAD_REQUEST)
 
     def test_put_active_user_weak_password(self):
@@ -1083,15 +1138,16 @@ class TestUsersRecoverPassword(unittest.TestCase):
         Test put request with weak password and assures user password was not updated on disk
         """
         recoverpass_code = 'arbitrarycode'
-        server.userdata[self.active_user]['recoverpass_data'] = {'recoverpass_code': recoverpass_code,
-                                                                 'timestamp': server.now_timestamp(),
-                                                                 }
+        active_user = server.User.get(server.User.username == self.active_username)
+        active_user.recoverpass_code = recoverpass_code
+        active_user.recoverpass_code_timestamp = server.now_timestamp()
+        active_user.save()
 
-        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_user),
+        test = self.app.put(SERVER_API + 'users/{}'.format(self.active_username),
                             data={'recoverpass_code': recoverpass_code,
                                   'password': 'weakpass'})
         self.assertEqual(test.status_code, HTTP_FORBIDDEN)
-        self.assertNotEqual(server.userdata[self.active_user]['password'], 'weakpass')
+        # TODO: test that password in db is not changed
 
 
 def get_dic_dir_states():

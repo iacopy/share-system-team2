@@ -23,6 +23,8 @@ from flask.ext.mail import Mail, Message
 from werkzeug import secure_filename
 from passlib.hash import sha256_crypt
 import passwordmeter
+import peewee
+
 
 __title__ = 'PyBOX'
 
@@ -40,8 +42,9 @@ FILE_ROOT = 'filestorage'
 
 URL_PREFIX = '/API/V1'
 SERVER_DIRECTORY = os.path.dirname(__file__)
-# Users login data are stored in a json file in the server
+
 USERDATA_FILENAME = 'userdata.json'
+DATABASE_FILENAME = 'users_data.db'
 PASSWORD_RECOVERY_EMAIL_TEMPLATE_FILE_PATH = os.path.join(SERVER_DIRECTORY,
                                                           'password_recovery_email_template.txt')
 SIGNUP_EMAIL_TEMPLATE_FILE_PATH = os.path.join(SERVER_DIRECTORY,
@@ -93,7 +96,7 @@ file_handler = logging.FileHandler(LOG_FILENAME)
 file_handler.setLevel(logging.DEBUG)
 # Create console handler with a higher log level:
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.ERROR)  # changeable from command line passing verbosity option or --verbose or --debug
+console_handler.setLevel(logging.WARNING)  # changeable from command line passing verbosity option or --verbose or --debug
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
@@ -104,10 +107,18 @@ logger.info('Server {} at {}'.format(launched_or_imported, datetime.datetime.now
 
 # Server initialization
 # =====================
-userdata = {}
-
 app = Flask(__name__)
 app.testing = __name__ != '__main__'  # Reasonable assumption?
+
+userdata = {}
+
+if app.testing:
+    database = peewee.SqliteDatabase(':memory:')
+else:
+    # http://peewee.readthedocs.org/en/latest/peewee/database.html#multi-threaded-applications
+    database = peewee.SqliteDatabase(DATABASE_FILENAME, threadlocals=True)
+database.connect()
+
 # if True, you can see the exception traceback, suppress the sending of emails, etc.
 EMAIL_SETTINGS_FILEPATH = join(os.path.dirname(__file__),
                                ('email_settings.ini', 'email_settings.ini.example')[app.testing])
@@ -295,7 +306,16 @@ def reset_userdata():
     """
     Clear userdata dictionary.
     """
-    userdata.clear()
+    try:
+        File.drop_table()
+    except peewee.OperationalError:
+        pass
+    try:
+        User.drop_table()
+    except peewee.OperationalError:
+        pass
+
+    database.create_tables([User, File])
 
 
 @auth.verify_password
@@ -306,18 +326,20 @@ def verify_password(username, password):
     if not username:
         # Warning/info?
         return False
-    single_user_data = userdata.get(username)
-    if single_user_data:
-        stored_pw = single_user_data.get(PWD)
+
+    try:
+        user = User.get(User.username == username)
+    except peewee.DoesNotExist:
+        logger.warn('User \'{}\' does not exist!'.format(username))
+        res = False
+    else:
+        stored_pw = user.encrypted_password
         assert stored_pw is not None, 'Server error: user data must contain a password!'
         res = sha256_crypt.verify(password, stored_pw)
-    else:
-        logger.info('User "{}" does not exist'.format(username))
-        res = False
     return res
 
 
-def activate_user(username, encrypted_password):
+def activate_user(username):
     """
     Handle the activation of an existing user(with flag active: True).
     """
@@ -326,14 +348,17 @@ def activate_user(username, encrypted_password):
     temp = init_user_directory(username)
     last_server_timestamp, dir_snapshot = temp[LAST_SERVER_TIMESTAMP], temp[SNAPSHOT]
 
-    single_user_data = {USER_CREATION_TIME: now_timestamp(),
-                        PWD: encrypted_password,
-                        LAST_SERVER_TIMESTAMP: last_server_timestamp,
-                        SNAPSHOT: dir_snapshot,
-                        USER_IS_ACTIVE: True,
-                        }
-    userdata[username] = single_user_data
-    save_userdata()
+    # TODO: use with
+    user = User.get(User.username == username)
+    user.active = True
+    user.activation_code = ''
+    user.activation_code_timestamp = 0
+    user.server_timestamp = last_server_timestamp
+    user.save()
+
+    userdata[username] = {}
+    userdata[username][SNAPSHOT] = dir_snapshot
+
     response = 'User "{}" activated.\n'.format(username), HTTP_OK
 
     logger.debug(response)
@@ -348,13 +373,17 @@ def create_user(username, password, activation_code):
     logger.debug('Creating user...')
     if username and password:
         enc_pass = _encrypt_password(password)
-        single_user_data = {USER_IS_ACTIVE: False,
-                            PWD: enc_pass,
-                            USER_CREATION_DATA: {'creation_timestamp': now_timestamp(),
-                                                 'activation_code': activation_code}
-                            }
-        userdata[username] = single_user_data
-        save_userdata()
+        creation_timestamp = now_timestamp()
+
+        User.create(username=username,
+                    creation_timestamp=creation_timestamp,
+                    active=False,
+                    encrypted_password=enc_pass,
+                    server_timestamp=creation_timestamp,  # ?
+                    activation_code=activation_code,
+                    activation_code_timestamp=creation_timestamp,
+                    )
+
         response = 'User activation email sent to {}'.format(username), HTTP_CREATED
     else:
         raise ServerInternalError('Unexpected error: username and password must not be empty here!!!\n'
@@ -403,6 +432,48 @@ def send_email(subject, sender, recipients, text_body):
     return msg
 
 
+database_proxy = peewee.Proxy()
+
+
+class BaseModel(peewee.Model):
+    class Meta:
+        database = database_proxy
+
+
+class User(BaseModel):
+    username = peewee.CharField(unique=True)  # username == email
+    creation_timestamp = peewee.IntegerField()
+    active = peewee.BooleanField(default=False)
+    encrypted_password = peewee.CharField()
+
+    # TODO: to reduce the number of columns and disk space, just use 2 fields instead of 4
+    # for the current token (activation_code or recoverpass_code, inferred by the user's status)
+    activation_code = peewee.CharField(max_length=32)  # e.g. bfce9ec2d61e397cabce646bbe617fb5
+    activation_code_timestamp = peewee.IntegerField()
+    recoverpass_code = peewee.CharField(max_length=32, default='')
+    recoverpass_code_timestamp = peewee.IntegerField(default=0)
+    server_timestamp = peewee.IntegerField(default=0)
+
+    def __repr__(self):
+        return self.username
+
+
+class File(BaseModel):
+    owner = peewee.ForeignKeyField(User, related_name='files')
+
+    path = peewee.CharField()
+    md5 = peewee.CharField()
+    timestamp = peewee.IntegerField()
+
+
+database_proxy.initialize(database)
+
+try:
+    database_proxy.create_tables([User, File])
+except peewee.OperationalError:
+    logger.debug('Tables already exist')
+
+
 class Users(Resource):
     @staticmethod
     def _clean_inactive_users():
@@ -411,13 +482,19 @@ class Users(Resource):
         and return a list of them.
         :return: list
         """
-        to_remove = [username for (username, data) in userdata.iteritems()
-                     if userdata[username][USER_IS_ACTIVE] is False and
-                     now_timestamp() - data[USER_CREATION_DATA][USER_CREATION_TIME] >
-                     USER_ACTIVATION_TIMEOUT]
-        for username in to_remove:
-            userdata.pop(username)
-        return to_remove
+        now_ts = now_timestamp()
+
+        # Use select query instead of delete query in order to return the deleted usernames.
+        users_to_be_deleted = User.select().where(
+            (User.active == False),
+            (now_ts - User.activation_code_timestamp > USER_ACTIVATION_TIMEOUT)
+        )
+
+        # Delete users one by one
+        for user in users_to_be_deleted:
+            user.delete_instance()
+
+        return [user.username for user in users_to_be_deleted]
 
     @auth.login_required
     def get(self, username):
@@ -426,8 +503,9 @@ class Users(Resource):
         """
         logged = auth.username()
         if username == logged:
-            user_data = userdata[username]
-            creation_timestamp = user_data.get(USER_CREATION_TIME)
+            # The user exists since he's authenticated.
+            user = User.get(User.username == username)
+            creation_timestamp = user.creation_timestamp
             if creation_timestamp:
                 time_str = time.strftime('%Y-%m-%d at %H:%M:%S', time.localtime(creation_timestamp/10000.0))
             else:
@@ -440,27 +518,35 @@ class Users(Resource):
                 if username == '__all__':
                     # Easter egg to see a list of active and pending (inactive) users.
                     logger.warn('WARNING: showing the list of all users (debug mode)!!!')
-                    if userdata:
-                        active_users = [username for username in userdata if userdata[username][USER_IS_ACTIVE]]
-                        active_users_str = ', '.join(active_users)
-                        inactive_users = [username for username in userdata if not userdata[username][USER_IS_ACTIVE]]
-                        inactive_users_str = ', '.join(inactive_users)
-                    else:
-                        reg_users_str = 'neither registered nor pending users'
 
-                    response = 'Activated users: {}. Inactive users: {}'.format(active_users_str, inactive_users_str), HTTP_OK
+                    users_select = User.select()
+                    if users_select.count():
+                        active_users, inactive_users = [], []
+                        for user in users_select:
+                            if user.active:
+                                active_users.append(user)
+                            else:
+                                inactive_users.append(user)
+
+                        active_users_str = ', '.join(active_users)
+                        inactive_users_str = ', '.join(inactive_users)
+                        resp_str = 'Activated users: {}. Inactive users: {}'.format(active_users_str, inactive_users_str)
+                    else:
+                        resp_str = 'neither registered nor pending users'
+                    return resp_str, HTTP_OK
                 else:
                     logger.warn('WARNING: showing {}\'s info (debug mode)!!!'.format(username))
-                    if username in userdata:
-                        user_data = userdata[username]
-                        creation_timestamp = user_data.get(USER_CREATION_TIME)
+                    try:
+                        user = User.get(User.username == username)
+                    except peewee.DoesNotExist:
+                        response = 'The user {} does not exist.'.format(username), HTTP_NOT_FOUND
+                    else:
+                        creation_timestamp = user.creation_timestamp
                         if creation_timestamp:
                             time_str = time.strftime('%Y-%m-%d at %H:%M:%S', time.localtime(creation_timestamp))
                         else:
                             time_str = '<unknown time>'
                         response = 'User {} joined on {}.'.format(username, time_str), HTTP_OK
-                    else:
-                        response = 'The user {} does not exist.'.format(username), HTTP_NOT_FOUND
                 return response
 
             abort(HTTP_FORBIDDEN)
@@ -495,31 +581,34 @@ class Users(Resource):
 
         send_email(subject, sender, recipients, text_body)
 
-        if username in userdata:
-            # If an user is pending for activation, it can't be another one with the same name
-            #  asking for registration
-            response = 'Error: username "{}" already exists!\n'.format(username), HTTP_CONFLICT
-        else:
+        try:
+            User.get(User.username == username)
+        except peewee.DoesNotExist:
             return create_user(username, password, activation_code)
-
-        return response
+        else:
+            # If an user is pending for activation, it can't be another one with the same name
+            # asking for registration.
+            return 'Error: username \'{}\' already exists!'.format(username), HTTP_CONFLICT
 
     def put(self, username):
         """
         Activate user using activation code sent by email, or reset its password.
         """
-        # create a list of all usernames with flag active: False
-
         # Pending users cleanup
         expired_pending_users = self._clean_inactive_users()
         logging.info('Expired pending users: {}'.format(expired_pending_users))
 
-        if username in userdata:
-            if userdata[username][USER_IS_ACTIVE] is True:
+        users = User.select().where(User.username == username)
+        n_of_username = users.count()
+        if n_of_username:
+            assert n_of_username == 1, 'Duplicated username: found {} \'{}\'!!!'.format(n_of_username, username)
+            user = users[0]
+            if user.active:
                 # User active -> Password recovery/reset
                 try:
                     new_password = request.form[PWD]
                 except KeyError:
+                    logger.error('password parameter missing! {}'.format(request.form))
                     abort(HTTP_BAD_REQUEST)
 
                 strength, improvements = passwordmeter.test(new_password)
@@ -527,17 +616,16 @@ class Users(Resource):
                     return improvements, HTTP_FORBIDDEN
 
                 request_recoverpass_code = request.form['recoverpass_code']
-                recoverpass_stuff = userdata[username].get('recoverpass_data')
+                recoverpass_code = user.recoverpass_code
+                recoverpass_timestamp = user.recoverpass_code_timestamp
 
-                if recoverpass_stuff:
-                    recoverpass_code = recoverpass_stuff['recoverpass_code']
-                    recoverpass_timestamp = recoverpass_stuff['timestamp']
+                if recoverpass_code:  # The user is actually changing its password
                     if request_recoverpass_code == recoverpass_code and \
                             (now_timestamp() - recoverpass_timestamp < USER_RECOVERPASS_TIMEOUT):
-                        userdata[username][PWD] = new_password
-                        enc_pass = _encrypt_password(new_password)
-                        userdata[username][PWD] = enc_pass
-                        userdata[username].pop('recoverpass_data')
+                        user.recoverpass_code = ''
+                        user.encrypted_password = _encrypt_password(new_password)
+
+                        user.save()
                         return 'Password changed succesfully', HTTP_OK
                 # NB: old generated tokens are refused, but, currently, they are not removed from userdata.
                 return 'Invalid code', HTTP_NOT_FOUND
@@ -545,19 +633,20 @@ class Users(Resource):
                 # User inactive -> activation
                 activation_code = request.form['activation_code']
                 logger.debug('Got activation code: {}'.format(activation_code))
-
-                user_data = userdata[username]
-                logger.debug('Creating user {}'.format(username))
-                if activation_code == user_data[USER_CREATION_DATA]['activation_code']:
+                logger.debug('Activating user \'{}\''.format(username))
+                #if activation_code == user_data[USER_CREATION_DATA]['activation_code']:
+                if activation_code == user.activation_code:
                     # Actually activate user
-                    encrypted_password = user_data[PWD]
-                    return activate_user(username, encrypted_password)
+                    return activate_user(username)
                 else:
+                    logger.error('Wrong activation code: {} vs {}'.format(activation_code,
+                                                                          user.activation_code))
                     abort(HTTP_NOT_FOUND)
         else:
             # Not-existing user --> 404 (OR create it in debug mode with a backdoor)
             #### DEBUG-MODE BACKDOOR ####
             # Shortcut to create an user skipping the email confirmation (valid in debug mode only!).
+            activation_code = request.form['activation_code']
             if app.debug and activation_code == 'BACKDOOR':
                 password = 'debug-password'
                 logger.warn('WARNING: Creating user "{}" (password="{}") '
@@ -579,12 +668,14 @@ class Users(Resource):
             # I mustn't delete other users!
             abort(HTTP_FORBIDDEN)
 
-        if userdata[username][USER_IS_ACTIVE]:
+        user = User.get(User.username == username)
+
+        if user.active:
             # Remove also the user's folder
             shutil.rmtree(userpath2serverpath(username))
 
         userdata.pop(username)
-        save_userdata()
+        user.delete_instance()
         return 'User "{}" removed.\n'.format(username), HTTP_OK
 
 
@@ -603,7 +694,9 @@ class UsersRecoverPassword(Resource):
         recoverpass_code = os.urandom(16).encode('hex')
 
         # The password reset must be called from an active or inactive user
-        if username not in userdata:
+        try:
+            user = User.get(User.username == username)
+        except peewee.DoesNotExist:
             abort(HTTP_NOT_FOUND)
 
         # Composing email
@@ -619,19 +712,10 @@ class UsersRecoverPassword(Resource):
 
         send_email(subject, sender, recipients, text_body)
 
-        if userdata[username][USER_IS_ACTIVE] is True:
-            # create or update 'recoverpass_data' key.
-            userdata[username]['recoverpass_data'] = {
-                'recoverpass_code': recoverpass_code,
-                'timestamp': now_timestamp()
-                }
-            save_userdata()
-
-        elif userdata[username][USER_IS_ACTIVE] is False:
-            userdata[username][USER_CREATION_DATA] = {'creation_timestamp': now_timestamp(),
-                                                      'activation_code': recoverpass_code}
-            save_userdata()
-        # the else case is already covered in the first if
+        # create or update 'recoverpass_data' key.
+        user.recoverpass_code = recoverpass_code
+        user.recoverpass_code_timestamp = now_timestamp()
+        user.save()
 
         return 'Reset email sent to {}'.format(username), HTTP_ACCEPTED
 
@@ -980,6 +1064,7 @@ def main():
     update_passwordmeter_terms(UNWANTED_PASS)
 
     userdata.update(load_userdata())
+
     init_root_structure()
     app.run(host=args.host, debug=args.debug)
 
