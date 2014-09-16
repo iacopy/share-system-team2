@@ -746,9 +746,9 @@ class TestUsersPost(unittest.TestCase):
     def tearDown(self):
         tear_down_test_dir()
 
-    def test_post(self):
+    def test_created(self):
         """
-        Post request for new user
+        Test successful post request for register a new user: test that it's added to db.
         """
         new_username = 'abcd@mail.com'
         new_user_password = '123.Abc'
