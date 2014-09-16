@@ -509,8 +509,6 @@ class TestRequests(unittest.TestCase):
         src_copy_test_file_path = 'test_copy_src/testcopysrc.txt'
         dst_copy_test_file_path = 'test_copy_dst/testcopydst.txt'
         # Create source file to be copied and its destination.
-        src_copy_filepath = userpath2serverpath(USR, src_copy_test_file_path)
-
         _create_file(USR, src_copy_test_file_path, 'this is the file to be copied')
 
         test = self.app.post(copy_test_url,
