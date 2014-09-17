@@ -45,6 +45,8 @@ SERVER_DIRECTORY = os.path.dirname(__file__)
 
 USERDATA_FILENAME = 'userdata.json'
 DATABASE_FILENAME = 'users_data.db'
+PG_DATABASE = 'postgres'
+
 PASSWORD_RECOVERY_EMAIL_TEMPLATE_FILE_PATH = os.path.join(SERVER_DIRECTORY,
                                                           'password_recovery_email_template.txt')
 SIGNUP_EMAIL_TEMPLATE_FILE_PATH = os.path.join(SERVER_DIRECTORY,
@@ -113,10 +115,12 @@ app.testing = __name__ != '__main__'  # Reasonable assumption?
 userdata = {}
 
 if app.testing:
+    logger.debug('Using SqliteDatabase:memory:')
     database = peewee.SqliteDatabase(':memory:')
 else:
+    logger.debug('Using postgres database \'{}\''.format(PG_DATABASE))
     # http://peewee.readthedocs.org/en/latest/peewee/database.html#multi-threaded-applications
-    database = peewee.SqliteDatabase(DATABASE_FILENAME, threadlocals=True)
+    database = peewee.PostgresqlDatabase(PG_DATABASE)
 database.connect()
 
 # if True, you can see the exception traceback, suppress the sending of emails, etc.
@@ -318,6 +322,7 @@ def reset_userdata():
     database.create_tables([User, File])
 
 
+
 @auth.verify_password
 def verify_password(username, password):
     """
@@ -442,17 +447,17 @@ class BaseModel(peewee.Model):
 
 class User(BaseModel):
     username = peewee.CharField(unique=True)  # username == email
-    creation_timestamp = peewee.IntegerField()
+    creation_timestamp = peewee.BigIntegerField()
     active = peewee.BooleanField(default=False)
     encrypted_password = peewee.CharField()
 
     # TODO: to reduce the number of columns and disk space, just use 2 fields instead of 4
     # for the current token (activation_code or recoverpass_code, inferred by the user's status)
     activation_code = peewee.CharField(max_length=32)  # e.g. bfce9ec2d61e397cabce646bbe617fb5
-    activation_code_timestamp = peewee.IntegerField()
+    activation_code_timestamp = peewee.BigIntegerField()
     recoverpass_code = peewee.CharField(max_length=32, default='')
-    recoverpass_code_timestamp = peewee.IntegerField(default=0)
-    server_timestamp = peewee.IntegerField(default=0)
+    recoverpass_code_timestamp = peewee.BigIntegerField(default=0)
+    server_timestamp = peewee.BigIntegerField(default=0)
 
     def __repr__(self):
         return self.username
@@ -470,8 +475,9 @@ database_proxy.initialize(database)
 
 try:
     database_proxy.create_tables([User, File])
-except peewee.OperationalError:
+except peewee.ProgrammingError:
     logger.debug('Tables already exist')
+    database_proxy.rollback()  # needed in PostgreSQL
 
 
 class Users(Resource):
