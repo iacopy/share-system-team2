@@ -938,7 +938,7 @@ class TestUsersDelete(unittest.TestCase):
         _manually_create_user(USR, PW)
         user_dirpath = userpath2serverpath(USR)
         # Really created?
-        assert username_exists(USR), 'User \'{}\' does not exist!'.format(USR)
+        assert username_exists(USR), 'User \'{}\' was just manually created but does not exist!'.format(USR)
         assert os.path.exists(user_dirpath), '{}\'s directory not found!'.format(USR)
 
         # Test FORBIDDEN case (removing other users)
