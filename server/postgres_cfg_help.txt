@@ -1,7 +1,7 @@
 To properly configure Postgres to be used with Peewee:
 
-$ sudo apt-get install libpq-dev python-dev
-$ pip install psycopg2  (requirements)
+    $ sudo apt-get install libpq-dev python-dev
+    $ pip install psycopg2  (requirements)
 
 You also have to create a postgres ROLE matching your computer user name (e.g. 'pippo'),
 otherwise an exception will be raised:
