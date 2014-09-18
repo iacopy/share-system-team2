@@ -363,6 +363,7 @@ def activate_user(username):
 
     userdata[username] = {}
     userdata[username][SNAPSHOT] = dir_snapshot
+    save_userdata()
 
     response = 'User "{}" activated.\n'.format(username), HTTP_OK
 
