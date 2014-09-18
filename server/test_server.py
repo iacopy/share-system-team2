@@ -219,6 +219,7 @@ class TestRequests(unittest.TestCase):
         self.app = server.app.test_client()
         self.app.testing = True
 
+        server.reset_userdata()
         _manually_remove_user(USR)
         _manually_create_user(USR, PW)
 
@@ -615,6 +616,7 @@ class TestGetRequests(unittest.TestCase):
         self.app = server.app.test_client()
         self.app.testing = True
 
+        server.reset_userdata()
         _manually_remove_user(USR)
         _manually_create_user(USR, PW)
         _create_file(USR, self.USER_RELATIVE_DOWNLOAD_FILEPATH, 'some text')
@@ -1157,12 +1159,8 @@ def get_dic_dir_states():
     dir_state = {}
     for username in server.userdata:
         single_user_data = server.userdata[username].copy()
-        single_user_data.pop(server.PWD)  # not very beautiful
-        single_user_data.pop(server.USER_CREATION_TIME)  # not very beautiful
         dic_state[username] = single_user_data
         dir_state = json.load(open('userdata.json', "rb"))
-        dir_state[username].pop(server.PWD)  # not very beatiful cit. ibidem
-        dir_state[username].pop(server.USER_CREATION_TIME)  # not very beatiful cit. ibidem
     return dic_state, dir_state
 
 
