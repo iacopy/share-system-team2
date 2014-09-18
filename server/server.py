@@ -335,7 +335,7 @@ def verify_password(username, password):
     try:
         user = User.get(User.username == username)
     except peewee.DoesNotExist:
-        logger.warn('User \'{}\' does not exist!'.format(username))
+        logger.info('User \'{}\' does not exist!'.format(username))
         res = False
     else:
         stored_pw = user.encrypted_password
@@ -615,7 +615,7 @@ class Users(Resource):
                 try:
                     new_password = request.form[PWD]
                 except KeyError:
-                    logger.error('password parameter missing! {}'.format(request.form))
+                    logger.info('password parameter missing! {}'.format(request.form))
                     abort(HTTP_BAD_REQUEST)
 
                 strength, improvements = passwordmeter.test(new_password)
@@ -646,7 +646,7 @@ class Users(Resource):
                     # Actually activate user
                     return activate_user(username)
                 else:
-                    logger.error('Wrong activation code: {} vs {}'.format(activation_code,
+                    logger.info('Wrong activation code: {} vs {}'.format(activation_code,
                                                                           user.activation_code))
                     abort(HTTP_NOT_FOUND)
         else:
