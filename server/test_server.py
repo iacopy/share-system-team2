@@ -879,9 +879,6 @@ class TestUsersPut(unittest.TestCase):
 
         self.assertTrue(username_exists(self.username))
         self.assertTrue(os.path.exists(self.user_dirpath))
-        # Check that user snapshot is saved also *on disk*.
-        self.assertIn(self.username, server.load_userdata())
-
         user = server.User.get(server.User.username == self.username)
         self.assertTrue(user.active)
         self.assertEqual(user.activation_code, '')  # activation code must be reset

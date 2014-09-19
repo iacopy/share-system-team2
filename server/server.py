@@ -361,9 +361,12 @@ def activate_user(username):
     user.server_timestamp = last_server_timestamp
     user.save()
 
-    userdata[username] = {}
-    userdata[username][SNAPSHOT] = dir_snapshot
-    save_userdata()
+    for file_path, values in dir_snapshot.items():
+        File.create(owner=user,
+                    path=file_path,
+                    timestamp=values[0],
+                    md5=values[1])
+
 
     response = 'User "{}" activated.\n'.format(username), HTTP_OK
 
@@ -469,7 +472,7 @@ class File(BaseModel):
 
     path = peewee.CharField()
     md5 = peewee.CharField()
-    timestamp = peewee.IntegerField()
+    timestamp = peewee.BigIntegerField()
 
 
 database_proxy.initialize(database)
@@ -681,8 +684,9 @@ class Users(Resource):
             # Remove also the user's folder
             shutil.rmtree(userpath2serverpath(username))
 
-        userdata.pop(username)
-        user.delete_instance()
+        # Remove user row and dependent rows on File table
+        # (recursive = True set cascade on delete)
+        user.delete_instance(recursive=True)
         return 'User "{}" removed.\n'.format(username), HTTP_OK
 
 
