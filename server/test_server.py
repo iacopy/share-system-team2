@@ -435,7 +435,12 @@ class TestRequests(unittest.TestCase):
 
         self.assertEqual(test.status_code, server.HTTP_OK)
         self.assertFalse(os.path.isfile(to_delete_filepath))
-        self.assertNotIn(delete_test_file_path, server.userdata[USR][server.SNAPSHOT])
+
+        # Check that the file path is not in database anymore.
+        with self.assertRaises(peewee.DoesNotExist) as cm:
+            server.File.get(server.File.path == delete_test_file_path)
+        exception = cm.exception
+        self.assertIsInstance(exception, peewee.DoesNotExist)
 
     def test_delete_file_path_with_tricky_filepath(self):
         """
