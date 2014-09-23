@@ -46,6 +46,9 @@ SERVER_DIRECTORY = os.path.dirname(__file__)
 USERDATA_FILENAME = 'userdata.json'
 DATABASE_FILENAME = 'users_data.db'
 PG_DATABASE = 'postgres'
+PG_HOST = 'localhost'
+PG_PORT = '5433'
+PG_USR = 'postgres'
 
 PASSWORD_RECOVERY_EMAIL_TEMPLATE_FILE_PATH = os.path.join(SERVER_DIRECTORY,
                                                           'password_recovery_email_template.txt')
@@ -120,7 +123,7 @@ if app.testing:
 else:
     logger.debug('Using postgres database \'{}\''.format(PG_DATABASE))
     # http://peewee.readthedocs.org/en/latest/peewee/database.html#multi-threaded-applications
-    database = peewee.PostgresqlDatabase(PG_DATABASE)
+    database = peewee.PostgresqlDatabase(PG_DATABASE, host=PG_HOST, user=PG_USR, port=PG_PORT)
 database.connect()
 
 # if True, you can see the exception traceback, suppress the sending of emails, etc.
