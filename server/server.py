@@ -972,7 +972,7 @@ class Files(Resource):
 
         return dirname, filename
 
-    def _update_user_path(self, username, path):
+    def _update_user_path(self, username, path, md5):
         """
         Make all needed updates to <userdata> (dict and disk) after a post or a put.
         Return the last modification int timestamp of written file.
@@ -982,9 +982,20 @@ class Files(Resource):
         """
         filepath = userpath2serverpath(username, path)
         last_server_timestamp = file_timestamp(filepath)
-        userdata[username][LAST_SERVER_TIMESTAMP] = last_server_timestamp
-        userdata[username]['files'][normpath(path)] = [last_server_timestamp, calculate_file_md5(open(filepath, 'rb'))]
-        save_userdata()
+
+        # update Postgres database
+        user = User.get(User.username == username)
+        User.update(server_timestamp=last_server_timestamp).where(User.username == username).execute()
+        # if the path already exists then only timestamp and md5 will be updated
+        # otherwise a new row will be inserted
+        try:
+            f = File.get(File.path == path, File.owner == user.id)
+            f.timestamp = last_server_timestamp
+            f.md5 = md5
+            f.save()
+        except peewee.DoesNotExist:
+            File.insert(owner=user.id, path=path, timestamp=last_server_timestamp, md5=md5).execute()
+
         return last_server_timestamp
 
     @auth.login_required
@@ -999,6 +1010,7 @@ class Files(Resource):
 
         upload_file = request.files['file']
         md5 = request.form['md5']
+        md5 = calculate_file_md5(upload_file)
         dirname, filename = self._get_dirname_filename(path)
 
         if calculate_file_md5(upload_file) != md5:
@@ -1014,7 +1026,7 @@ class Files(Resource):
         upload_file.save(filepath)
 
         # Update and save <userdata>, and return the last server timestamp.
-        last_server_timestamp = self._update_user_path(username, path)
+        last_server_timestamp = self._update_user_path(username, path, md5)
 
         resp = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
         resp.status_code = HTTP_CREATED
@@ -1031,6 +1043,7 @@ class Files(Resource):
         username = auth.username()
         upload_file = request.files['file']
         md5 = request.form['md5']
+        md5 = calculate_file_md5(upload_file)
         dirname, filename = self._get_dirname_filename(path)
 
         if calculate_file_md5(upload_file) != md5:
@@ -1043,7 +1056,7 @@ class Files(Resource):
             abort(HTTP_NOT_FOUND)
 
         # Update and save <userdata>, and return the last server timestamp.
-        last_server_timestamp = self._update_user_path(username, path)
+        last_server_timestamp = self._update_user_path(username, path, md5)
 
         resp = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
         resp.status_code = HTTP_CREATED
