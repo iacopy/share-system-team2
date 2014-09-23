@@ -771,10 +771,17 @@ class Actions(Resource):
 
         # file deleted, last_server_timestamp is set to current timestamp
         last_server_timestamp = now_timestamp()
-        userdata[username][LAST_SERVER_TIMESTAMP] = last_server_timestamp
-        userdata[username]['files'].pop(normpath(filepath))
-        save_userdata()
-        return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
+        user = User.get(User.username == username)
+
+        # server_timestamp is set to current timestamp
+        upd_user_query = User.update(server_timestamp=last_server_timestamp).where(User.username == username)
+        upd_user_query.execute()
+
+        # delete record from File table
+        del_file_query = File.delete().where((File.owner == user.id) & (File.path == filepath))
+        del_file_query.execute()
+
+        return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp, 'filepath': filepath})
 
     def _copy(self, username):
         """
@@ -799,6 +806,13 @@ class Actions(Resource):
             abort(HTTP_NOT_FOUND)
 
         last_server_timestamp = file_timestamp(server_dst)
+        user = User.get(User.username == username)
+        # update server timestamp
+        upd_user_query = User.update(server_timestamp=last_server_timestamp).where(User.username == username)
+        upd_user_query.execute()
+        # update path timestamp
+        upd_file_query = File.update(timestamp=last_server_timestamp).where(File.path == dst)
+        upd_file_query.execute()
 
         _, md5 = userdata[username]['files'][normpath(src)]
         userdata[username][LAST_SERVER_TIMESTAMP] = last_server_timestamp
