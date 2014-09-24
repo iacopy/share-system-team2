@@ -742,13 +742,11 @@ class Actions(Resource):
                    'copy': self._copy,
                    'move': self._move,
                    }
-        try:
-            resp = methods[cmd](username)
-        except KeyError:
+        method = methods.get(cmd)
+        if not method:
             abort(HTTP_NOT_FOUND)
-        else:
-            save_userdata()
-            return resp
+        save_userdata()
+        return methods[cmd](username)
 
     def _delete(self, username):
         """
