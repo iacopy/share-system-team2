@@ -75,6 +75,7 @@ def _create_file(username, user_relpath, content, update_userdata=True):
     :param content: str
     :return: float
     """
+    logging.debug('creating file %s for user %s' % (user_relpath, username))
     filepath = userpath2serverpath(username, user_relpath)
     dirpath = os.path.dirname(filepath)
     if not os.path.isdir(dirpath):

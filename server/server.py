@@ -769,11 +769,14 @@ class Actions(Resource):
         json format: {LAST_SERVER_TIMESTAMP: int}
         """
         filepath = request.form['filepath']
+        logger.debug('{} delete: {}'.format(username, filepath))
 
         if not check_path(filepath, username):
+            logger.debug('forbidden path: {}'.format(filepath))
             abort(HTTP_FORBIDDEN)
 
         abspath = os.path.abspath(join(FILE_ROOT, username, filepath))
+        logger.debug('abspath to remove from disk: {}'.format(abspath))
 
         try:
             os.remove(abspath)
@@ -800,13 +803,15 @@ class Actions(Resource):
         in a json file.jso
         userdata[username]n format: {LAST_SERVER_TIMESTAMP: int}
         """
-
         src = request.form['src']
         dst = request.form['dst']
         server_src = userpath2serverpath(username, src)
         server_dst = userpath2serverpath(username, dst)
+        logger.debug('{}: copying {} to {}'.format(username, src, dst))
+        logger.debug('server paths: {} to {}'.format(server_src, server_dst))
 
         if not (check_path(src, username) or check_path(dst, username)):
+            logger.debug('source and/or destination path forbidden')
             abort(HTTP_FORBIDDEN)
 
         if os.path.isfile(server_src):
@@ -814,6 +819,7 @@ class Actions(Resource):
                 os.makedirs(os.path.dirname(server_dst))
             shutil.copy(server_src, server_dst)
         else:
+            logger.debug('source file {} to copy not found'.format(server_src))
             abort(HTTP_NOT_FOUND)
 
         # Update database
