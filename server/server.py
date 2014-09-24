@@ -325,6 +325,21 @@ def reset_userdata():
     database.create_tables([User, File])
 
 
+# database utils
+def get_md5(user, path):
+    try:
+        # if it is a user instance
+        file_instance = File.get(
+            File.owner == user,
+            File.path == path)
+    except ValueError:
+        # assume suer it's a username
+        user = User.get(User.username == user)
+        file_instance = File.get(
+            File.owner == user,
+            File.path == path)
+    return file_instance.md5
+
 
 @auth.verify_password
 def verify_password(username, password):
@@ -770,16 +785,14 @@ class Actions(Resource):
         # file deleted, last_server_timestamp is set to current timestamp
         last_server_timestamp = now_timestamp()
         user = User.get(User.username == username)
-
-        # server_timestamp is set to current timestamp
-        upd_user_query = User.update(server_timestamp=last_server_timestamp).where(User.username == username)
-        upd_user_query.execute()
-
+        user.server_timestamp = last_server_timestamp
         # delete record from File table
-        del_file_query = File.delete().where((File.owner == user.id) & (File.path == filepath))
-        del_file_query.execute()
-
-        return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp, 'filepath': filepath})
+        query = File.delete().where(
+            (File.owner == user),
+            (File.path == normpath(filepath))
+        )
+        query.execute()
+        return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
 
     def _copy(self, username):
         """
@@ -803,20 +816,31 @@ class Actions(Resource):
         else:
             abort(HTTP_NOT_FOUND)
 
+        # Update database
+
+        # User
         last_server_timestamp = file_timestamp(server_dst)
         user = User.get(User.username == username)
         # update server timestamp
         upd_user_query = User.update(server_timestamp=last_server_timestamp).where(User.username == username)
         upd_user_query.execute()
-        # update path timestamp
+
+        # update file timestamp
         upd_file_query = File.update(timestamp=last_server_timestamp).where(File.path == dst)
         upd_file_query.execute()
 
-        _, md5 = userdata[username]['files'][normpath(src)]
-        userdata[username][LAST_SERVER_TIMESTAMP] = last_server_timestamp
-        userdata[username]['files'][normpath(dst)] = [last_server_timestamp, md5]
-        save_userdata()
-        return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
+        src_file_instance = File.get(
+            (File.owner == user),
+            (File.path == src)
+        )
+        # Create destination file in the database
+        File.create(owner=user,
+                    path=dst,
+                    timestamp=last_server_timestamp,
+                    md5=src_file_instance.md5)
+
+        resp = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
+        return resp
 
     def _move(self, username):
         """
@@ -839,13 +863,21 @@ class Actions(Resource):
             abort(HTTP_NOT_FOUND)
         self._clear_dirs(os.path.dirname(server_src), username)
 
+        # Update database
         last_server_timestamp = now_timestamp()
-
-        _, md5 = userdata[username]['files'][normpath(src)]
-        userdata[username][LAST_SERVER_TIMESTAMP] = last_server_timestamp
-        userdata[username]['files'].pop(normpath(src))
-        userdata[username]['files'][normpath(dst)] = [last_server_timestamp, md5]
-        save_userdata()
+        md5 = get_md5(username, src)
+        user = User.get(User.username == username)
+        user.server_timestamp = last_server_timestamp
+        delete_query = File.delete().where(
+            File.owner == user,
+            File.path == src)
+        delete_query.execute()
+        File.create(
+            owner=user,
+            path=dst,
+            md5=md5,
+            timestamp=last_server_timestamp,
+        )
         return jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
 
     def _clear_dirs(self, path, root):
@@ -1008,7 +1040,7 @@ class Files(Resource):
 
         upload_file = request.files['file']
         md5 = request.form['md5']
-        md5 = calculate_file_md5(upload_file)
+
         dirname, filename = self._get_dirname_filename(path)
 
         if calculate_file_md5(upload_file) != md5:
@@ -1041,7 +1073,7 @@ class Files(Resource):
         username = auth.username()
         upload_file = request.files['file']
         md5 = request.form['md5']
-        md5 = calculate_file_md5(upload_file)
+
         dirname, filename = self._get_dirname_filename(path)
 
         if calculate_file_md5(upload_file) != md5:

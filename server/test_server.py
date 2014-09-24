@@ -83,8 +83,13 @@ def _create_file(username, user_relpath, content, update_userdata=True):
         fp.write(content)
     mtime = server.now_timestamp()
     if update_userdata:
-        server.userdata[username][server.SNAPSHOT][user_relpath] = [mtime,
-                                                                    server.calculate_file_md5(open(filepath, 'rb'))]
+        md5 = server.calculate_file_md5(open(filepath, 'rb'))
+        user = server.User.get(server.User.username == username)
+        server.File.create(
+            owner=user,
+            path=user_relpath,
+            timestamp=mtime,
+            md5=md5)
     return mtime
 
 
@@ -128,7 +133,7 @@ def build_tstuser_dir(username):
 
 def _manually_create_user(username, pw):
     """
-    Create an *active* user, its server directory, and return its userdata dictionary.
+    Create an *active* user, its server directory, and return its dirstate dictionary.
     :param username: str
     :param pw: str
     :return: dict
@@ -137,7 +142,8 @@ def _manually_create_user(username, pw):
     # Create user directory with default structure (use the server function)
     user_dir_state = server.init_user_directory(username)
     single_user_data = user_dir_state
-    server.userdata[username] = user_dir_state
+
+    server.userdata[username] = user_dir_state  # TODO: remove to peeweeze
 
     server.User.create(
         username=username,
@@ -152,14 +158,12 @@ def _manually_create_user(username, pw):
 
 def _manually_remove_user(username):  # TODO: make this from server module?
     """
-    Remove user dictionary from server <userdata>, if exist,
+    Remove user dictionary from server database, if exist,
     and remove its directory from disk, if exist.
     :param username: str
     """
-    if USR in server.userdata:
-        server.userdata.pop(username)
-
-    server.User.delete().where(server.User.username == username)
+    user = server.User.get(server.User.username == username)
+    user.delete_instance(recursive=True)  # NB: delete also files!!
 
     # Remove user directory if exists!
     user_dirpath = userpath2serverpath(USR)
@@ -209,6 +213,20 @@ def _make_temp_file():
     return temp_file, test_md5
 
 
+# database utils
+def get_md5(user, path):
+    try:
+        file_instance = server.File.get(
+            server.File.owner == user,
+            server.File.path == path)
+    except ValueError:
+        user = server.User.get(server.User.username == user)
+        file_instance = server.File.get(
+            server.File.owner == user,
+            server.File.path == path)
+    return file_instance.md5
+
+
 class TestRequests(unittest.TestCase):
     def setUp(self):
         """
@@ -219,9 +237,9 @@ class TestRequests(unittest.TestCase):
         self.app = server.app.test_client()
         self.app.testing = True
 
-        server.reset_userdata()
-        _manually_remove_user(USR)
         _manually_create_user(USR, PW)
+
+        self.user = server.User.get(server.User.username == USR)
 
     def tearDown(self):
         _manually_remove_user(USR)
@@ -264,10 +282,14 @@ class TestRequests(unittest.TestCase):
             test_file.close()
         self.assertEqual(test.status_code, server.HTTP_CREATED)
         self.assertTrue(os.path.isfile(uploaded_filepath))
-        # check that uploaded path exists in username files dict
-        self.assertIn(user_relative_upload_filepath, server.userdata[USR][server.SNAPSHOT])
-        os.remove(uploaded_filepath)
-        logging.info('"{}" removed'.format(uploaded_filepath))
+
+        # check that uploaded path exists in username files in the database
+        uploaded_file_query = server.File.select().where(
+            server.File.owner == self.user,
+            server.File.path == user_relative_upload_filepath
+        )
+
+        self.assertEqual(uploaded_file_query.count(), 1)
 
     def test_files_post_with_not_allowed_path(self):
         """
@@ -286,8 +308,7 @@ class TestRequests(unittest.TestCase):
             test_file.close()
         self.assertEqual(test.status_code, server.HTTP_FORBIDDEN)
         self.assertFalse(os.path.isfile(userpath2serverpath(USR, user_filepath)))
-        # check that uploaded path NOT exists in username files dict
-        self.assertNotIn(user_filepath, server.userdata[USR][server.SNAPSHOT])
+        # TODO: test file not in File table
 
     def test_files_post_with_existent_path(self):
         """
@@ -297,7 +318,8 @@ class TestRequests(unittest.TestCase):
         _create_file(USR, path, 'I already exist! Don\'t erase me!')
         to_created_filepath = userpath2serverpath(USR, path)
         old_content = open(to_created_filepath).read()
-        old_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
+
+        old_md5 = get_md5(USR, path)
 
         url = SERVER_FILES_API + path
 
@@ -313,7 +335,8 @@ class TestRequests(unittest.TestCase):
         self.assertEqual(test.status_code, server.HTTP_FORBIDDEN)
         new_content = open(to_created_filepath).read()
         self.assertEqual(old_content, new_content)
-        new_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
+
+        new_md5 = get_md5(USR, path)
         self.assertEqual(old_md5, new_md5)
 
     def test_files_post_with_bad_md5(self):
@@ -326,7 +349,6 @@ class TestRequests(unittest.TestCase):
         assert not os.path.exists(uploaded_filepath), '"{}" file is existing'.format(uploaded_filepath)
         # Create temporary file for test
         test_file, not_used_md5 = _make_temp_file()
-
         # Create fake md5 and send it instead the right md5
         fake_md5 = 'sent_bad_md5'
         try:
@@ -336,11 +358,18 @@ class TestRequests(unittest.TestCase):
                                  follow_redirects=True)
         finally:
             test_file.close()
-        self.assertEqual(test.status_code, server.HTTP_CONFLICT)
-        self.assertFalse(os.path.isfile(userpath2serverpath(USR, user_relative_upload_filepath)))
 
-        # check that uploaded path NOT exists in username files dict
-        self.assertNotIn(user_relative_upload_filepath, server.userdata[USR][server.SNAPSHOT])
+        self.assertEqual(test.status_code, server.HTTP_CONFLICT)
+        self.assertFalse(os.path.isfile(
+            userpath2serverpath(USR,
+            user_relative_upload_filepath)))
+
+        # check that uploaded path NOT exists in username files in the database
+        uploaded_file_query = server.File.select().where(
+            server.File.owner == self.user,
+            server.File.path == user_relative_upload_filepath,
+        )
+        self.assertEqual(uploaded_file_query.count(), 0)
 
     def test_files_put_with_auth(self):
         """
@@ -350,26 +379,24 @@ class TestRequests(unittest.TestCase):
         _create_file(USR, path, 'I will change')
         to_modify_filepath = userpath2serverpath(USR, path)
         old_content = open(to_modify_filepath).read()
-        old_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
+        old_md5 = get_md5(USR, path)
 
         url = SERVER_FILES_API + path
         # Create temporary file for test
-        test_file, not_used_md5 = _make_temp_file()
-
-        # Create fake md5 and send it instead the right md5
-        fake_md5 = 'sent_bad_md5'
+        test_file, test_md5 = _make_temp_file()
         try:
             test = self.app.put(url,
                                 headers=make_basicauth_headers(USR, PW),
-                                data={'file': test_file, 'md5': fake_md5},
+                                data={'file': test_file, 'md5': test_md5},
                                 follow_redirects=True)
         finally:
             test_file.close()
+
         new_content = open(to_modify_filepath).read()
-        self.assertEqual(old_content, new_content)
-        new_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
-        self.assertEqual(old_md5, new_md5)
-        self.assertEqual(test.status_code, server.HTTP_CONFLICT)
+        self.assertNotEqual(old_content, new_content)
+        new_md5 = get_md5(USR, path)
+        self.assertNotEqual(old_md5, new_md5)
+        self.assertEqual(test.status_code, server.HTTP_OK)
 
     def test_files_put_of_not_existing_file(self):
         """
@@ -390,7 +417,7 @@ class TestRequests(unittest.TestCase):
             test_file.close()
 
         self.assertEqual(test.status_code, server.HTTP_NOT_FOUND)
-        self.assertNotIn(to_modify_filepath, server.userdata[USR][server.SNAPSHOT])
+        # TODO: test File table
 
     def test_files_put_with_bad_md5(self):
         """
@@ -400,23 +427,27 @@ class TestRequests(unittest.TestCase):
         _create_file(USR, path, 'I will NOT change')
         to_modify_filepath = userpath2serverpath(USR, path)
         old_content = open(to_modify_filepath).read()
-        old_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
+        old_md5 = get_md5(USR, path)
 
         url = SERVER_FILES_API + path
-        # Create temporary file for test
-        test_file, test_md5 = _make_temp_file()
+        # Create fake md5 and send it instead the right md5
+        fake_md5 = 'sent_bad_md5'
+        test_file, not_used_md5 = _make_temp_file()
         try:
             test = self.app.put(url,
                                 headers=make_basicauth_headers(USR, PW),
-                                data={'file': test_file, 'md5': test_md5},
+                                data={'file': test_file, 'md5': fake_md5},
                                 follow_redirects=True)
         finally:
             test_file.close()
+
         new_content = open(to_modify_filepath).read()
-        self.assertNotEqual(old_content, new_content)
-        new_md5 = server.userdata[USR][server.SNAPSHOT][path][1]
-        self.assertNotEqual(old_md5, new_md5)
-        self.assertEqual(test.status_code, server.HTTP_CREATED)  # 200 or 201 (OK or created)?
+        self.assertEqual(old_content, new_content)
+        new_md5 = server.calculate_file_md5(open(to_modify_filepath, 'rb'))
+        stored_md5 = get_md5(USR, path)
+        self.assertEqual(new_md5, stored_md5)
+        self.assertEqual(old_md5, new_md5)
+        self.assertEqual(test.status_code, server.HTTP_CONFLICT)
 
     def test_delete_file_path(self):
         """
@@ -431,14 +462,16 @@ class TestRequests(unittest.TestCase):
 
         test = self.app.post(delete_test_url,
                              headers=make_basicauth_headers(USR, PW),
-                             data={'filepath': delete_test_file_path}, follow_redirects=True)
+                             data={'filepath': delete_test_file_path},
+                             follow_redirects=True)
 
         self.assertEqual(test.status_code, server.HTTP_OK)
         self.assertFalse(os.path.isfile(to_delete_filepath))
 
         # Check that the file path is not in database anymore.
         with self.assertRaises(peewee.DoesNotExist) as cm:
-            server.File.get(server.File.path == delete_test_file_path)
+            server.File.get(server.File.owner == self.user,
+                            server.File.path == delete_test_file_path)
         exception = cm.exception
         self.assertIsInstance(exception, peewee.DoesNotExist)
 
@@ -479,15 +512,20 @@ class TestRequests(unittest.TestCase):
         src_copy_filepath = userpath2serverpath(USR, src_copy_test_file_path)
 
         _create_file(USR, src_copy_test_file_path, 'this is the file to be copied')
-        _create_file(USR, dst_copy_test_file_path, 'different other content')
 
-        test = self.app.post(copy_test_url,
-                             headers=make_basicauth_headers(USR, PW),
-                             data={'src': src_copy_test_file_path, 'dst': dst_copy_test_file_path},
-                             follow_redirects=True)
+        test = self.app.post(
+            copy_test_url, headers=make_basicauth_headers(USR, PW),
+            data={'src': src_copy_test_file_path, 'dst': dst_copy_test_file_path}, follow_redirects=True)
 
-        self.assertEqual(test.status_code, server.HTTP_OK)
         self.assertTrue(os.path.isfile(src_copy_filepath))
+        self.assertEqual(test.status_code, server.HTTP_OK)
+
+        # database test
+        dst_file_instance = server.File.select().where(
+            (server.File.owner == self.user),
+            (server.File.path == dst_copy_test_file_path)
+        )
+        self.assertEqual(dst_file_instance.count(), 1)
 
     def test_copy_file_path_with_tricky_filepaths(self):
         """
@@ -554,7 +592,7 @@ class TestRequests(unittest.TestCase):
                              data={'src': src_move_test_file_path, 'dst': dst_move_test_file_path},
                              follow_redirects=True)
 
-        self.assertEqual(test.status_code, server.HTTP_OK)
+        self.assertEqual(test.status_code, server.HTTP_OK)  # FIXME: does not pass
         self.assertFalse(os.path.isfile(src_move_filepath))
 
     def test_move_file_path_with_wrong_cmd(self):
@@ -621,8 +659,6 @@ class TestGetRequests(unittest.TestCase):
         self.app = server.app.test_client()
         self.app.testing = True
 
-        server.reset_userdata()
-        _manually_remove_user(USR)
         _manually_create_user(USR, PW)
         _create_file(USR, self.USER_RELATIVE_DOWNLOAD_FILEPATH, 'some text')
 
@@ -675,10 +711,10 @@ class TestGetRequests(unittest.TestCase):
         Test that server return a HTTP_UNAUTHORIZED error if
         the given user does not exist.
         """
-        user = 'UnExIsTiNgUsEr'
-        assert user not in server.userdata
+        username = 'UnExIsTiNgUsEr'
+        assert not username_exists(username)
         test = self.app.get(self.DOWNLOAD_TEST_URL,
-                            headers=make_basicauth_headers(user, PW))
+                            headers=make_basicauth_headers(username, PW))
         self.assertEqual(test.status_code, server.HTTP_UNAUTHORIZED)
 
     def test_files_get_without_auth(self):
@@ -720,8 +756,8 @@ class TestGetRequests(unittest.TestCase):
         """
         Test server-side user files snapshot.
         """
+        # TODO: peeweeize
         # The test user is created in setUp
-
         expected_timestamp = server.userdata[USR]['server_timestamp']
         expected_snapshot = server.userdata[USR]['files']
         target = {server.LAST_SERVER_TIMESTAMP: expected_timestamp,
@@ -1159,6 +1195,7 @@ def get_dic_dir_states():
     NB: Passwords are removed from the dictionary states.
     :return: tuple
     """
+    # TODO: peeweeize
     dic_state = {}
     dir_state = {}
     for username in server.userdata:
@@ -1182,6 +1219,7 @@ class TestUserdataConsistence(unittest.TestCase):
         """
         Complex test that do several actions and finally test the consistency.
         """
+        # TODO: peeweeize
         # create user
         user = 'pippo'
         _manually_create_user(user, 'pass')
