@@ -1057,7 +1057,7 @@ class Files(Resource):
         last_server_timestamp = self._update_user_path(username, path, md5)
 
         resp = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp})
-        resp.status_code = HTTP_CREATED
+        resp.status_code = HTTP_OK
         return resp
 
 
