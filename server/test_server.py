@@ -272,6 +272,7 @@ class TestRequests(unittest.TestCase):
         upload_test_url = SERVER_FILES_API + user_relative_upload_filepath
         uploaded_filepath = userpath2serverpath(USR, user_relative_upload_filepath)
         assert not os.path.exists(uploaded_filepath), '"{}" file is existing'.format(uploaded_filepath)
+
         # Create temporary file for test
         test_file, test_md5 = _make_temp_file()
         try:
@@ -281,6 +282,7 @@ class TestRequests(unittest.TestCase):
                                  follow_redirects=True)
         finally:
             test_file.close()
+
         self.assertEqual(test.status_code, server.HTTP_CREATED)
         self.assertTrue(os.path.isfile(uploaded_filepath))
 
