@@ -1007,12 +1007,12 @@ class Files(Resource):
         username = auth.username()
 
         upload_file = request.files['file']
-        # md5 = request.form['md5']
+        md5 = request.form['md5']
         md5 = calculate_file_md5(upload_file)
         dirname, filename = self._get_dirname_filename(path)
 
-        # if calculate_file_md5(upload_file) != md5:
-        #     abort(HTTP_CONFLICT)
+        if calculate_file_md5(upload_file) != md5:
+            abort(HTTP_CONFLICT)
 
         if not os.path.exists(dirname):
             os.makedirs(dirname)
@@ -1040,12 +1040,12 @@ class Files(Resource):
         """
         username = auth.username()
         upload_file = request.files['file']
-        # md5 = request.form['md5']
+        md5 = request.form['md5']
         md5 = calculate_file_md5(upload_file)
         dirname, filename = self._get_dirname_filename(path)
-        #
-        # if calculate_file_md5(upload_file) != md5:
-        #     abort(HTTP_CONFLICT)
+
+        if calculate_file_md5(upload_file) != md5:
+            abort(HTTP_CONFLICT)
 
         filepath = join(dirname, filename)
         if os.path.isfile(filepath):
