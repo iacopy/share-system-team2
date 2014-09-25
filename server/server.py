@@ -985,9 +985,13 @@ class Files(Resource):
         else:
             # If path is not given, return the snapshot of user directory.
             logger.debug('launch snapshot of {}...'.format(repr(user_rootpath)))
-            snapshot = userdata[username][SNAPSHOT]
+            user = User.get(User.username == username)
+
+            for file_instance in File.select().where(File.owner == user):
+                snapshot = {file_instance.path: [file_instance.timestamp, file_instance.md5]}
+
             logger.info('snapshot returned {:,} files'.format(len(snapshot)))
-            last_server_timestamp = userdata[username][LAST_SERVER_TIMESTAMP]
+            last_server_timestamp = user.server_timestamp
             response = jsonify({LAST_SERVER_TIMESTAMP: last_server_timestamp,
                                 SNAPSHOT: snapshot})
         logging.debug(response)
