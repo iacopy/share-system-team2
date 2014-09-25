@@ -142,9 +142,7 @@ def _manually_create_user(username, pw):
     enc_pass = server._encrypt_password(pw)
     # Create user directory with default structure (use the server function)
     user_dir_state = server.init_user_directory(username)
-    single_user_data = user_dir_state
-
-    server.userdata[username] = user_dir_state  # TODO: remove to peeweeze
+    dir_snapshot, server_timestamp = user_dir_state[server.SNAPSHOT], user_dir_state[server.LAST_SERVER_TIMESTAMP]
 
     server.User.create(
         username=username,
@@ -152,9 +150,16 @@ def _manually_create_user(username, pw):
         activation_code='',
         encrypted_password=enc_pass,
         activation_code_timestamp=0,
-        creation_timestamp=server.now_timestamp(),
+        creation_timestamp=server_timestamp,
     )
-    return single_user_data
+    user = server.User.get(server.User.username == username)
+    for file_path, values in dir_snapshot.items():
+        server.File.create(owner=user,
+                           path=file_path,
+                           timestamp=values[0],
+                           md5=values[1])
+
+    return server_timestamp
 
 
 def _manually_remove_user(username):  # TODO: make this from server module?
@@ -761,8 +766,12 @@ class TestGetRequests(unittest.TestCase):
         """
         # TODO: peeweeize
         # The test user is created in setUp
-        expected_timestamp = server.userdata[USR]['server_timestamp']
-        expected_snapshot = server.userdata[USR]['files']
+        user = server.User.get(server.User.username == USR)
+        expected_timestamp = user.server_timestamp
+
+        for file_instance in server.File.select().where(server.File.owner == user):
+            expected_snapshot = {file_instance.path: [file_instance.timestamp, file_instance.md5]}
+
         target = {server.LAST_SERVER_TIMESTAMP: expected_timestamp,
                   server.SNAPSHOT: expected_snapshot}
         test = self.app.get(SERVER_FILES_API,
